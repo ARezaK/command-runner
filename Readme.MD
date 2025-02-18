@@ -3,7 +3,7 @@ For running management commands from the web interface
 
 Add to requirements.txt
 ```
-command-runner@ git+https://github.com/ARezaK/command-runner.git
+CommandRunner@ git+https://github.com/ARezaK/command-runner.git
 ```
 
 Copy templates folder to your main app folder
