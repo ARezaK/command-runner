@@ -1,0 +1,182 @@
+{% extends "admin/base_site.html" %}
+
+{% block content %}
+    <style>
+        .command-container {
+            margin: 20px;
+        }
+
+        .command-output {
+        padding: 15px;
+        border-radius: 4px;
+        margin-top: 10px;
+        white-space: pre-wrap;
+        font-family: monospace;
+        max-height: 400px;
+        overflow-y: auto;
+    }
+    .running {
+        opacity: 0.7;
+    }
+
+        .error {
+            color: red;
+        }
+    </style>
+       <style>
+        .spinner {
+            border: 4px solid rgba(0, 0, 0, 0.1);
+            width: 36px;
+            height: 36px;
+            border-radius: 50%;
+            border-left-color: #09f;
+            animation: spin 1s ease infinite;
+            margin: 10px auto;
+        }
+ 
+        @keyframes spin {
+            0% {
+                transform: rotate(0deg);
+            }
+            100% {
+                transform: rotate(360deg);
+            }
+        }
+    </style>
+
+    <div class="command-container">
+        <h2>Available Management Commands</h2>
+
+        {% csrf_token %}
+
+        <select id="commandSelect" class="form-control">
+            <option value="">Select a command</option>
+            {% for command in commands %}
+                <option value="{{ command.name }}" data-help="{{ command.help }}">
+                    {{ command.name }} ({{ command.app }})
+                </option>
+            {% endfor %}
+        </select>
+
+        <div id="helpText" style="margin: 15px 0; display: none;">
+            <h4>Command Help:</h4>
+            <pre></pre>
+        </div>
+
+        <div id="argumentsDiv" style="margin: 15px 0; display: none;">
+            <label for="arguments">Arguments:</label>
+            <input type="text" id="arguments" class="form-control" placeholder="Enter arguments separated by spaces">
+        </div>
+
+        <button id="runCommand" class="button" style="margin-top: 10px;">Run Command</button>
+        <div id="output" class="command-output"></div>
+        <div id="spinner" class="spinner" style="display: none;"></div>
+    </div>
+
+    <script>
+        let commandRunning = false;
+        let commandId = null;
+        let pollInterval = null;
+        
+        async function pollStatus() {
+            try {
+                const response = await fetch(`/command-runner/status/${commandId}/`);
+                const data = await response.json();
+                const outputDiv = document.getElementById('output');
+                
+                console.log('Poll response:', data); // Debug log
+                
+                if (data.output !== undefined) {
+                    outputDiv.textContent = data.output || '';
+                }
+                
+                if (data.error) {
+                    const errorDiv = document.createElement('div');
+                    errorDiv.className = 'error';
+                    errorDiv.textContent = data.error;
+                    outputDiv.appendChild(errorDiv);
+                }
+                
+                if (data.finished) {
+                    clearInterval(pollInterval);
+                    commandRunning = false;
+                    document.getElementById('spinner').style.display = 'none'; // Hide spinner when finished
+                    return;
+           }
+                
+                outputDiv.scrollTop = outputDiv.scrollHeight;
+            } catch (error) {
+                console.error('Polling error:', error);
+        clearInterval(pollInterval); // Also stop polling on error
+        commandRunning = false;
+        document.getElementById('spinner').style.display = 'none';
+        document.getElementById('runCommand').disabled = false;
+    }
+        }
+        
+        document.getElementById('commandSelect').addEventListener('change', function() {
+            const helpText = this.options[this.selectedIndex].getAttribute('data-help');
+            const helpDiv = document.getElementById('helpText');
+            const argumentsDiv = document.getElementById('argumentsDiv');
+
+            if(helpText) {
+                helpDiv.style.display = 'block';
+                helpDiv.querySelector('pre').textContent = helpText;
+                argumentsDiv.style.display = 'block';
+            } else {
+                helpDiv.style.display = 'none';
+                argumentsDiv.style.display = 'none';
+            }
+        });
+
+
+        document.getElementById('runCommand').addEventListener('click', async function() {
+    const button = this;
+    const command = document.getElementById('commandSelect').value;
+    const arguments = document.getElementById('arguments').value;
+    const outputDiv = document.getElementById('output');
+    
+    if (!command) {
+        alert('Please select a command');
+        return;
+    }
+    if (commandRunning) {
+        return;
+    }
+
+    outputDiv.style.display = 'block';
+    outputDiv.textContent = 'Starting command...\n';
+    button.disabled = true;
+    commandRunning = true;
+    spinner.style.display = 'block'; // Show spinne
+    
+    try {
+        const response = await fetch('/command-runner/start/', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-CSRFToken': document.querySelector('[name=csrfmiddlewaretoken]').value
+            },
+            body: JSON.stringify({
+                command: command,
+                arguments: arguments
+            })
+        });
+        
+        const data = await response.json();
+        console.log('Start response:', data); // Debug log
+        
+        commandId = data.command_id;
+        
+        // Start polling
+        pollInterval = setInterval(pollStatus, 1000);
+        
+    } catch (error) {
+        outputDiv.textContent = `Error: ${error}`;
+        button.disabled = false;
+        commandRunning = false;
+        spinner.style.display = 'none'; 
+    }
+});
+</script>
+{% endblock %}
