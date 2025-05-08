@@ -52,7 +52,7 @@
         <select id="commandSelect" class="form-control">
             <option value="">Select a command</option>
             {% for command in commands %}
-                <option value="{{ command.name }}" data-help="{{ command.help }}">
+                <option value="{{ command.name }}" data-app="{{ command.app }}">
                     {{ command.name }} ({{ command.app }})
                 </option>
             {% endfor %}
@@ -60,6 +60,7 @@
 
         <div id="helpText" style="margin: 15px 0; display: none;">
             <h4>Command Help:</h4>
+            <div id="helpSpinner" class="spinner" style="display: none;"></div>
             <pre></pre>
         </div>
 
@@ -77,6 +78,7 @@
         let commandRunning = false;
         let commandId = null;
         let pollInterval = null;
+        let commandHelpCache = {};
         
         async function pollStatus() {
             try {
@@ -107,22 +109,56 @@
                 outputDiv.scrollTop = outputDiv.scrollHeight;
             } catch (error) {
                 console.error('Polling error:', error);
-        clearInterval(pollInterval); // Also stop polling on error
-        commandRunning = false;
-        document.getElementById('spinner').style.display = 'none';
-        document.getElementById('runCommand').disabled = false;
-    }
+                clearInterval(pollInterval); // Also stop polling on error
+                commandRunning = false;
+                document.getElementById('spinner').style.display = 'none';
+                document.getElementById('runCommand').disabled = false;
+            }
         }
         
-        document.getElementById('commandSelect').addEventListener('change', function() {
-            const helpText = this.options[this.selectedIndex].getAttribute('data-help');
+        async function fetchCommandHelp(commandName) {
+            if (commandHelpCache[commandName]) {
+                return commandHelpCache[commandName];
+            }
+            
+            const helpSpinner = document.getElementById('helpSpinner');
+            helpSpinner.style.display = 'block';
+            
+            try {
+                const response = await fetch('/command-runner/help/', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'X-CSRFToken': document.querySelector('[name=csrfmiddlewaretoken]').value
+                    },
+                    body: JSON.stringify({
+                        command: commandName
+                    })
+                });
+                
+                const data = await response.json();
+                commandHelpCache[commandName] = data.help;
+                return data.help;
+            } catch (error) {
+                console.error('Error fetching help:', error);
+                return 'Error loading help text';
+            } finally {
+                helpSpinner.style.display = 'none';
+            }
+        }
+        
+        document.getElementById('commandSelect').addEventListener('change', async function() {
+            const commandName = this.value;
             const helpDiv = document.getElementById('helpText');
             const argumentsDiv = document.getElementById('argumentsDiv');
 
-            if(helpText) {
+            if(commandName) {
                 helpDiv.style.display = 'block';
-                helpDiv.querySelector('pre').textContent = helpText;
                 argumentsDiv.style.display = 'block';
+                
+                // Fetch help text
+                const helpText = await fetchCommandHelp(commandName);
+                helpDiv.querySelector('pre').textContent = helpText;
             } else {
                 helpDiv.style.display = 'none';
                 argumentsDiv.style.display = 'none';
@@ -131,52 +167,52 @@
 
 
         document.getElementById('runCommand').addEventListener('click', async function() {
-    const button = this;
-    const command = document.getElementById('commandSelect').value;
-    const arguments = document.getElementById('arguments').value;
-    const outputDiv = document.getElementById('output');
-    
-    if (!command) {
-        alert('Please select a command');
-        return;
-    }
-    if (commandRunning) {
-        return;
-    }
+            const button = this;
+            const command = document.getElementById('commandSelect').value;
+            const arguments = document.getElementById('arguments').value;
+            const outputDiv = document.getElementById('output');
+            
+            if (!command) {
+                alert('Please select a command');
+                return;
+            }
+            if (commandRunning) {
+                return;
+            }
 
-    outputDiv.style.display = 'block';
-    outputDiv.textContent = 'Starting command...\n';
-    button.disabled = true;
-    commandRunning = true;
-    spinner.style.display = 'block'; // Show spinne
-    
-    try {
-        const response = await fetch('/command-runner/start/', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'X-CSRFToken': document.querySelector('[name=csrfmiddlewaretoken]').value
-            },
-            body: JSON.stringify({
-                command: command,
-                arguments: arguments
-            })
+            outputDiv.style.display = 'block';
+            outputDiv.textContent = 'Starting command...\n';
+            button.disabled = true;
+            commandRunning = true;
+            spinner.style.display = 'block'; // Show spinner
+            
+            try {
+                const response = await fetch('/command-runner/start/', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'X-CSRFToken': document.querySelector('[name=csrfmiddlewaretoken]').value
+                    },
+                    body: JSON.stringify({
+                        command: command,
+                        arguments: arguments
+                    })
+                });
+                
+                const data = await response.json();
+                console.log('Start response:', data); // Debug log
+                
+                commandId = data.command_id;
+                
+                // Start polling
+                pollInterval = setInterval(pollStatus, 1000);
+                
+            } catch (error) {
+                outputDiv.textContent = `Error: ${error}`;
+                button.disabled = false;
+                commandRunning = false;
+                spinner.style.display = 'none'; 
+            }
         });
-        
-        const data = await response.json();
-        console.log('Start response:', data); // Debug log
-        
-        commandId = data.command_id;
-        
-        // Start polling
-        pollInterval = setInterval(pollStatus, 1000);
-        
-    } catch (error) {
-        outputDiv.textContent = `Error: ${error}`;
-        button.disabled = false;
-        commandRunning = false;
-        spinner.style.display = 'none'; 
-    }
-});
-</script>
+    </script>
 {% endblock %}

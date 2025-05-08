@@ -7,4 +7,5 @@ urlpatterns = [
     path('', views.command_list, name='command_list'),
     path('start/', views.start_command, name='start_command'),
     path('status/<str:command_id>/', views.command_status, name='command_status'),
+    path('help/', views.get_command_help_view, name='command_help'),
 ]
