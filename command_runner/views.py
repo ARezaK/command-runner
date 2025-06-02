@@ -91,8 +91,8 @@ def get_command_help(command_name):
         parser = cmd.create_parser('manage.py', command_name)
         help_text += '\n\nUsage: ' + parser.format_help()
 
-        # Cache the result for 1 hour (or longer if commands don't change often)
-        cache.set(cache_key, help_text, 3600)
+        # cache the help text for 24 hours
+        cache.set(cache_key, help_text, 3600*24)
         return help_text
     except Exception as e:
         return str(e)
@@ -144,8 +144,8 @@ def command_list(request):
     # Sort the command list
     sorted_command_list = sorted(command_list, key=lambda x: x['name'])
     
-    # Cache the sorted command list for 1 hour (or set a longer timeout if appropriate)
-    cache.set(command_list_cache_key, sorted_command_list, 3600)
+    # Cache the sorted command list for 24 hour (or set a longer timeout if appropriate)
+    cache.set(command_list_cache_key, sorted_command_list, 3600 * 24)
 
     return render(request, 'command_runner/command_list.html', {
         'commands': sorted_command_list
