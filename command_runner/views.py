@@ -14,6 +14,8 @@ from django.core.cache import cache
 from django.http import JsonResponse
 from django.views.decorators.csrf import ensure_csrf_cookie
 
+# Maximum cache size to prevent TooBig errors (1MB)
+MAX_CACHE_SIZE = 1024 * 1024
 
 class FilteredStringIO(StringIO):
     def __init__(self, cache_key, *args, **kwargs):
@@ -24,6 +26,8 @@ class FilteredStringIO(StringIO):
         self.in_sql_block = False
         # Regular expression to match lines starting with SQL keywords.
         self.sql_pattern = re.compile(r'^(SELECT|INSERT|UPDATE|DELETE|FROM|WHERE|ORDER BY|LIMIT|Status for)\b', re.IGNORECASE)
+        # Pattern to match progress indicators (more specific to avoid filtering legitimate output)
+        self.progress_pattern = re.compile(r'(\r.*\|.*\|.*%|\r.*Downloading|\r.*Progress|.*\|\s*\d+%)', re.IGNORECASE)
         self.cache_key = cache_key
 
     def write(self, s):
@@ -39,6 +43,11 @@ class FilteredStringIO(StringIO):
         filtered_lines = []
         for line in lines:
             stripped = line.lstrip()
+            
+            # Skip progress indicators and download messages
+            if self.progress_pattern.search(line):
+                continue
+                
             if not self.in_sql_block:
                 # If the line starts with a SQL keyword, skip it and mark that we're in a SQL block.
                 if self.sql_pattern.match(stripped):
@@ -61,10 +70,23 @@ class FilteredStringIO(StringIO):
                         filtered_lines.append(line)
         # Write the filtered lines to the underlying StringIO.
         super().write(''.join(filtered_lines))
-        # Update the cache with the current output
-        current = cache.get(self.cache_key) or {'output': '', 'error': '', 'finished': False}
-        current['output'] = self.getvalue()
-        cache.set(self.cache_key, current, timeout=3600)
+        
+        # Update the cache with the current output, but limit size
+        try:
+            current_output = self.getvalue()
+            # Truncate if too large
+            if len(current_output) > MAX_CACHE_SIZE:
+                truncated_output = current_output[-MAX_CACHE_SIZE:] + "\n... (output truncated due to size limit)"
+            else:
+                truncated_output = current_output
+                
+            current = cache.get(self.cache_key) or {'output': '', 'error': '', 'finished': False}
+            current['output'] = truncated_output
+            cache.set(self.cache_key, current, timeout=3600)
+        except Exception as e:
+            # If cache fails, continue without caching to prevent command failure
+            print(f"Cache update failed: {e}")
+            pass
 
 
 def get_command_help(command_name):
@@ -177,17 +199,49 @@ def start_command(request):
             call_command(command_name, *args)
             final_output = stdout.getvalue()
             final_error = stderr.getvalue()
-            cache.set(cache_key, {
-                'output': final_output,
-                'error': final_error,
-                'finished': True
-            }, timeout=3600)
+            
+            # Truncate output if too large for cache
+            if len(final_output) > MAX_CACHE_SIZE:
+                final_output = final_output[-MAX_CACHE_SIZE:] + "\n... (output truncated due to size limit)"
+            if len(final_error) > MAX_CACHE_SIZE:
+                final_error = final_error[-MAX_CACHE_SIZE:] + "\n... (error output truncated due to size limit)"
+            
+            try:
+                cache.set(cache_key, {
+                    'output': final_output,
+                    'error': final_error,
+                    'finished': True
+                }, timeout=3600)
+            except Exception as cache_error:
+                # If cache still fails, store minimal info
+                print(f"Final cache update failed: {cache_error}")
+                cache.set(cache_key, {
+                    'output': 'Command completed but output too large for cache',
+                    'error': final_error[:1000] if final_error else '',
+                    'finished': True
+                }, timeout=3600)
         except Exception as e:
-            cache.set(cache_key, {
-                'output': stdout.getvalue(),
-                'error': str(e),
-                'finished': True
-            }, timeout=3600)
+            error_output = stdout.getvalue()
+            error_message = str(e)
+            
+            # Truncate if too large
+            if len(error_output) > MAX_CACHE_SIZE:
+                error_output = error_output[-MAX_CACHE_SIZE:] + "\n... (output truncated due to size limit)"
+            
+            try:
+                cache.set(cache_key, {
+                    'output': error_output,
+                    'error': error_message,
+                    'finished': True
+                }, timeout=3600)
+            except Exception as cache_error:
+                # If cache fails, store minimal error info
+                print(f"Error cache update failed: {cache_error}")
+                cache.set(cache_key, {
+                    'output': 'Command failed and output too large for cache',
+                    'error': error_message[:1000],
+                    'finished': True
+                }, timeout=3600)
         finally:
             sys.stdout, sys.stderr = old_stdout, old_stderr
 
