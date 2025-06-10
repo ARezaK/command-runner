@@ -113,8 +113,8 @@ def get_command_help(command_name):
         parser = cmd.create_parser('manage.py', command_name)
         help_text += '\n\nUsage: ' + parser.format_help()
 
-        # cache the help text for 24 hours
-        cache.set(cache_key, help_text, 3600*24)
+        # cache the help text forever
+        cache.set(cache_key, help_text, None)
         return help_text
     except Exception as e:
         return str(e)
@@ -144,30 +144,23 @@ def command_list(request):
             return JsonResponse({'error': str(e)})
 
     # Check if command list is already in cache
-    command_list_cache_key = 'command_runner:command_list'
-    cached_commands = cache.get(command_list_cache_key)
-    
-    if cached_commands:
-        return render(request, 'command_runner/command_list.html', {
-            'commands': cached_commands
-        })
-    
     # Get all available commands
     commands = get_commands()
     command_list = []
 
     for name, app in commands.items():
-        # Don't include help text in initial load - it will be fetched via AJAX when needed
+        if 'django' in app:
+            print(f"Skipped {name}:{app}")
+            # ignore the default django management commands
+            continue
         command_list.append({
             'name': name,
-            'app': app
+            'app': app,
+            'help': get_command_help(name) if name != 'help' else None,
         })
     
     # Sort the command list
     sorted_command_list = sorted(command_list, key=lambda x: x['name'])
-    
-    # Cache the sorted command list for 24 hour (or set a longer timeout if appropriate)
-    cache.set(command_list_cache_key, sorted_command_list, 3600 * 24)
 
     return render(request, 'command_runner/command_list.html', {
         'commands': sorted_command_list
@@ -273,22 +266,3 @@ def command_status(request, command_id):
     # Add print statements for debugging
     print(f"Status for {command_id}: {status}")
     return JsonResponse(status)
-
-
-@staff_member_required
-def get_command_help_view(request):
-    """API endpoint to fetch help text for a command."""
-    if request.method == 'POST':
-        try:
-            data = json.loads(request.body)
-            command_name = data.get('command')
-            
-            if not command_name:
-                return JsonResponse({'error': 'Command name is required'}, status=400)
-                
-            help_text = get_command_help(command_name)
-            return JsonResponse({'help': help_text})
-        except Exception as e:
-            return JsonResponse({'error': str(e)}, status=500)
-    
-    return JsonResponse({'error': 'Only POST requests are allowed'}, status=405)

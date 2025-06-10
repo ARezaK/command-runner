@@ -1,11 +1,10 @@
 from django.urls import path
-from . import views
+from .views import command_list, start_command, command_status
 
 app_name = 'command_runner'
 
 urlpatterns = [
-    path('', views.command_list, name='command_list'),
-    path('start/', views.start_command, name='start_command'),
-    path('status/<str:command_id>/', views.command_status, name='command_status'),
-    path('help/', views.get_command_help_view, name='command_help'),
+    path('', command_list, name='command_list'),
+    path('start/', start_command, name='start_command'),
+    path('status/<str:command_id>/', command_status, name='command_status'),
 ]

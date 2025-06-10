@@ -60,7 +60,6 @@
 
         <div id="helpText" style="margin: 15px 0; display: none;">
             <h4>Command Help:</h4>
-            <div id="helpSpinner" class="spinner" style="display: none;"></div>
             <pre></pre>
         </div>
 
@@ -78,7 +77,11 @@
         let commandRunning = false;
         let commandId = null;
         let pollInterval = null;
-        let commandHelpCache = {};
+        const commandHelps = {
+            {% for command in commands %}
+                '{{ command.name }}': `{{ command.help|escapejs }}`,
+            {% endfor %}
+        };
         
         async function pollStatus() {
             try {
@@ -116,38 +119,7 @@
             }
         }
         
-        async function fetchCommandHelp(commandName) {
-            if (commandHelpCache[commandName]) {
-                return commandHelpCache[commandName];
-            }
-            
-            const helpSpinner = document.getElementById('helpSpinner');
-            helpSpinner.style.display = 'block';
-            
-            try {
-                const response = await fetch('/command-runner/help/', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                        'X-CSRFToken': document.querySelector('[name=csrfmiddlewaretoken]').value
-                    },
-                    body: JSON.stringify({
-                        command: commandName
-                    })
-                });
-                
-                const data = await response.json();
-                commandHelpCache[commandName] = data.help;
-                return data.help;
-            } catch (error) {
-                console.error('Error fetching help:', error);
-                return 'Error loading help text';
-            } finally {
-                helpSpinner.style.display = 'none';
-            }
-        }
-        
-        document.getElementById('commandSelect').addEventListener('change', async function() {
+        document.getElementById('commandSelect').addEventListener('change', function() {
             const commandName = this.value;
             const helpDiv = document.getElementById('helpText');
             const argumentsDiv = document.getElementById('argumentsDiv');
@@ -157,7 +129,7 @@
                 argumentsDiv.style.display = 'block';
                 
                 // Fetch help text
-                const helpText = await fetchCommandHelp(commandName);
+                const helpText = commandHelps[commandName];
                 helpDiv.querySelector('pre').textContent = helpText;
             } else {
                 helpDiv.style.display = 'none';
