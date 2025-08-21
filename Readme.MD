@@ -18,7 +18,7 @@ Add to INSTALLED_APPS
 ```
 INSTALLED_APPS = [
     ...
-    'command_runner'',
+    'command_runner',
     ...
 ]
 ```
