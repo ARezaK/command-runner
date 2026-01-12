@@ -46,6 +46,7 @@
 
     <div class="command-container">
         <h2>Available Management Commands</h2>
+        <p style="color: #666; font-size: 0.9em; margin-top: -10px;">CommandRunner v2.0.0</p>
 
         {% csrf_token %}
 
@@ -69,6 +70,11 @@
         </div>
 
         <button id="runCommand" class="button" style="margin-top: 10px;">Run Command</button>
+
+        <div id="statusIndicator" style="display: none; margin-top: 10px; padding: 10px; border-radius: 4px; font-weight: bold;">
+            <span id="statusText"></span>
+        </div>
+
         <div id="output" class="command-output"></div>
         <div id="spinner" class="spinner" style="display: none;"></div>
     </div>
@@ -106,6 +112,23 @@
                     clearInterval(pollInterval);
                     commandRunning = false;
                     document.getElementById('spinner').style.display = 'none'; // Hide spinner when finished
+
+                    // Show completion status
+                    const statusIndicator = document.getElementById('statusIndicator');
+                    const statusText = document.getElementById('statusText');
+                    statusIndicator.style.display = 'block';
+
+                    if (data.error && data.error.trim()) {
+                        statusIndicator.style.backgroundColor = '#ffebee';
+                        statusIndicator.style.color = '#c62828';
+                        statusText.textContent = '✗ Command finished with errors';
+                    } else {
+                        statusIndicator.style.backgroundColor = '#e8f5e9';
+                        statusIndicator.style.color = '#2e7d32';
+                        statusText.textContent = '✓ Command completed successfully';
+                    }
+
+                    document.getElementById('runCommand').disabled = false;
                     return;
            }
                 
@@ -143,7 +166,9 @@
             const command = document.getElementById('commandSelect').value;
             const arguments = document.getElementById('arguments').value;
             const outputDiv = document.getElementById('output');
-            
+            const statusIndicator = document.getElementById('statusIndicator');
+            const statusText = document.getElementById('statusText');
+
             if (!command) {
                 alert('Please select a command');
                 return;
@@ -151,6 +176,15 @@
             if (commandRunning) {
                 return;
             }
+
+            // Hide previous status indicator
+            statusIndicator.style.display = 'none';
+
+            // Show running status
+            statusIndicator.style.display = 'block';
+            statusIndicator.style.backgroundColor = '#e3f2fd';
+            statusIndicator.style.color = '#1565c0';
+            statusText.textContent = '⏳ Command running...';
 
             outputDiv.style.display = 'block';
             outputDiv.textContent = 'Starting command...\n';

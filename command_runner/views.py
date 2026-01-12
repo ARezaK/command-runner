@@ -1,9 +1,12 @@
 import threading
+import multiprocessing
 import uuid
 import json
 import logging
 import re
 import sys
+import os
+import time
 from io import StringIO
 from django.shortcuts import render
 from django.core.management import get_commands
@@ -70,23 +73,54 @@ class FilteredStringIO(StringIO):
                         filtered_lines.append(line)
         # Write the filtered lines to the underlying StringIO.
         super().write(''.join(filtered_lines))
-        
+
         # Update the cache with the current output, but limit size
-        try:
-            current_output = self.getvalue()
-            # Truncate if too large
-            if len(current_output) > MAX_CACHE_SIZE:
-                truncated_output = current_output[-MAX_CACHE_SIZE:] + "\n... (output truncated due to size limit)"
-            else:
-                truncated_output = current_output
-                
-            current = cache.get(self.cache_key) or {'output': '', 'error': '', 'finished': False}
-            current['output'] = truncated_output
-            cache.set(self.cache_key, current, timeout=3600)
-        except Exception as e:
-            # If cache fails, continue without caching to prevent command failure
-            print(f"Cache update failed: {e}")
-            pass
+        # Only update cache periodically to reduce memcached load
+        current_output = self.getvalue()
+
+        # Initialize batching parameters on first write
+        if not hasattr(self, '_last_cache_size'):
+            self._last_cache_size = 0
+            self._cache_update_interval = 1000  # Update every 1KB of new output
+            self._last_cache_update_time = 0
+
+        output_size = len(current_output)
+        size_delta = output_size - self._last_cache_size
+
+        # Update cache if:
+        # 1. We have enough new data (size_delta >= interval), OR
+        # 2. It's been a while since last update (time-based), OR
+        # 3. This is the first write (last_cache_size == 0 and output_size > 0)
+        current_time = time.time()
+        time_since_update = current_time - self._last_cache_update_time
+
+        should_update = (
+            size_delta >= self._cache_update_interval or  # Size threshold
+            (time_since_update >= 2.0 and size_delta > 0) or  # Time threshold (every 2 seconds)
+            (self._last_cache_size == 0 and output_size > 0)  # First write
+        )
+
+        if should_update:
+            try:
+                # Truncate if too large (leave room for cache overhead)
+                max_output = MAX_CACHE_SIZE - 10000  # Reserve 10KB for overhead
+                if output_size > max_output:
+                    truncated_output = current_output[-max_output:] + "\n... (output truncated due to size limit)"
+                else:
+                    truncated_output = current_output
+
+                current = cache.get(self.cache_key)
+                if current is None:
+                    current = {'output': '', 'error': '', 'finished': False}
+                current['output'] = truncated_output
+                cache.set(self.cache_key, current, timeout=3600)
+                self._last_cache_size = output_size
+                self._last_cache_update_time = current_time
+            except Exception:
+                # If cache fails, continue without caching to prevent command failure
+                # Don't retry on same error - just skip future updates
+                # NOTE: Cannot use print() here as it would cause infinite recursion
+                self._cache_update_interval = float('inf')  # Disable future cache updates
 
 
 def get_command_help(command_name):
@@ -172,6 +206,111 @@ def get_command_key(command_id):
     return f'command_runner:{command_id}'
 
 
+def run_command_in_process(command_name, args, cache_key):
+    """
+    Run a Django management command in a separate process.
+    This function must be defined at module level for multiprocessing to work.
+    """
+    # In spawn mode, we need to set up Django fresh in the child process
+    import os
+    import django
+    from django.conf import settings
+
+    # Ensure DJANGO_SETTINGS_MODULE is set
+    if not os.environ.get('DJANGO_SETTINGS_MODULE'):
+        os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'test_project.settings')
+
+    # Setup Django in child process
+    if not settings.configured:
+        django.setup()
+
+    # Close inherited DB connections
+    try:
+        from django.db import connections
+        connections.close_all()
+    except Exception:
+        pass
+
+    # Import after Django is ready
+    from django.core.management import call_command
+    from django.core.cache import cache
+
+    # Close any existing cache connections and recreate them in this process
+    try:
+        cache.close()
+    except Exception:
+        pass
+
+    # Set logging level to reduce noise
+    logging.getLogger('django.db.backends').setLevel(logging.WARNING)
+
+    # Create filtered output streams
+    stdout = FilteredStringIO(cache_key)
+    stderr = FilteredStringIO(cache_key)
+
+    # Replace sys.stdout and sys.stderr
+    old_stdout, old_stderr = sys.stdout, sys.stderr
+    sys.stdout, sys.stderr = stdout, stderr
+
+    try:
+        call_command(command_name, *args)
+        final_output = stdout.getvalue()
+        final_error = stderr.getvalue()
+
+        # Truncate output if too large for cache
+        if len(final_output) > MAX_CACHE_SIZE:
+            final_output = final_output[-MAX_CACHE_SIZE:] + "\n... (output truncated due to size limit)"
+        if len(final_error) > MAX_CACHE_SIZE:
+            final_error = final_error[-MAX_CACHE_SIZE:] + "\n... (error output truncated due to size limit)"
+
+        try:
+            cache.set(cache_key, {
+                'output': final_output,
+                'error': final_error,
+                'finished': True
+            }, timeout=3600)
+        except Exception:
+            # If cache still fails, store minimal info
+            # NOTE: Cannot use print() as stdout is redirected to FilteredStringIO
+            try:
+                cache.set(cache_key, {
+                    'output': 'Command completed but output too large for cache',
+                    'error': final_error[:1000] if final_error else '',
+                    'finished': True
+                }, timeout=3600)
+            except Exception:
+                # Last resort: mark as finished with error message
+                pass
+    except Exception as e:
+        error_output = stdout.getvalue()
+        error_message = str(e)
+
+        # Truncate if too large
+        if len(error_output) > MAX_CACHE_SIZE:
+            error_output = error_output[-MAX_CACHE_SIZE:] + "\n... (output truncated due to size limit)"
+
+        try:
+            cache.set(cache_key, {
+                'output': error_output,
+                'error': error_message,
+                'finished': True
+            }, timeout=3600)
+        except Exception:
+            # If cache fails, store minimal error info
+            # NOTE: Cannot use print() as stdout is redirected to FilteredStringIO
+            try:
+                cache.set(cache_key, {
+                    'output': 'Command failed and output too large for cache',
+                    'error': error_message[:1000],
+                    'finished': True
+                }, timeout=3600)
+            except Exception:
+                # Last resort: just fail silently
+                pass
+    finally:
+        sys.stdout, sys.stderr = old_stdout, old_stderr
+
+
 @staff_member_required
 def start_command(request):
     data = json.loads(request.body)
@@ -180,63 +319,6 @@ def start_command(request):
 
     command_id = str(uuid.uuid4())
     cache_key = get_command_key(command_id)
-    logging.getLogger('django.db.backends').setLevel(logging.WARNING)
-
-    def run_command():
-        stdout = FilteredStringIO(cache_key)
-        stderr = FilteredStringIO(cache_key)
-        old_stdout, old_stderr = sys.stdout, sys.stderr
-        sys.stdout, sys.stderr = stdout, stderr
-
-        try:
-            call_command(command_name, *args)
-            final_output = stdout.getvalue()
-            final_error = stderr.getvalue()
-            
-            # Truncate output if too large for cache
-            if len(final_output) > MAX_CACHE_SIZE:
-                final_output = final_output[-MAX_CACHE_SIZE:] + "\n... (output truncated due to size limit)"
-            if len(final_error) > MAX_CACHE_SIZE:
-                final_error = final_error[-MAX_CACHE_SIZE:] + "\n... (error output truncated due to size limit)"
-            
-            try:
-                cache.set(cache_key, {
-                    'output': final_output,
-                    'error': final_error,
-                    'finished': True
-                }, timeout=3600)
-            except Exception as cache_error:
-                # If cache still fails, store minimal info
-                print(f"Final cache update failed: {cache_error}")
-                cache.set(cache_key, {
-                    'output': 'Command completed but output too large for cache',
-                    'error': final_error[:1000] if final_error else '',
-                    'finished': True
-                }, timeout=3600)
-        except Exception as e:
-            error_output = stdout.getvalue()
-            error_message = str(e)
-            
-            # Truncate if too large
-            if len(error_output) > MAX_CACHE_SIZE:
-                error_output = error_output[-MAX_CACHE_SIZE:] + "\n... (output truncated due to size limit)"
-            
-            try:
-                cache.set(cache_key, {
-                    'output': error_output,
-                    'error': error_message,
-                    'finished': True
-                }, timeout=3600)
-            except Exception as cache_error:
-                # If cache fails, store minimal error info
-                print(f"Error cache update failed: {cache_error}")
-                cache.set(cache_key, {
-                    'output': 'Command failed and output too large for cache',
-                    'error': error_message[:1000],
-                    'finished': True
-                }, timeout=3600)
-        finally:
-            sys.stdout, sys.stderr = old_stdout, old_stderr
 
     # Initialize cache
     cache.set(cache_key, {
@@ -245,9 +327,15 @@ def start_command(request):
         'finished': False
     }, timeout=3600)
 
-    # Run command in background
-    thread = threading.Thread(target=run_command)
-    thread.start()
+    # Run command in a separate process (daemon=True means it won't block parent process shutdown)
+    # Using 'spawn' method for better cross-platform compatibility and isolation
+    ctx = multiprocessing.get_context('spawn')
+    process = ctx.Process(
+        target=run_command_in_process,
+        args=(command_name, args, cache_key),
+        daemon=False  # Don't use daemon so command can complete even if Django restarts
+    )
+    process.start()
 
     return JsonResponse({'command_id': command_id})
 

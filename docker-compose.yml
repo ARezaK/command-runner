@@ -6,6 +6,15 @@ services:
       - .:/app
     ports:
       - "8000:8000"
+    depends_on:
+      - memcached
+    environment:
+      - MEMCACHED_HOST=memcached
+
+  memcached:
+    image: memcached:1.6-alpine
+    ports:
+      - "11211:11211"
 
 volumes:
   postgres_data: 

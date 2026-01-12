@@ -61,4 +61,12 @@ DATABASES = {
 # Default primary key field type
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
-STATIC_URL = 'static/' 
+STATIC_URL = 'static/'
+
+# Cache configuration for cross-process communication
+CACHES = {
+    'default': {
+        'BACKEND': 'django.core.cache.backends.memcached.PyMemcacheCache',
+        'LOCATION': os.environ.get('MEMCACHED_HOST', '127.0.0.1') + ':11211',
+    }
+} 
