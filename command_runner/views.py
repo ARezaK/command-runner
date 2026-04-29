@@ -111,7 +111,7 @@ class FilteredStringIO(StringIO):
 
                 current = cache.get(self.cache_key)
                 if current is None:
-                    current = {'output': '', 'error': '', 'finished': False}
+                    current = {'output': '', 'finished': False}
                 current['output'] = truncated_output
                 cache.set(self.cache_key, current, timeout=3600)
                 self._last_cache_size = output_size
@@ -264,20 +264,24 @@ def run_command_in_process(command_name, args, cache_key):
             final_error = final_error[-MAX_CACHE_SIZE:] + "\n... (error output truncated due to size limit)"
 
         try:
-            cache.set(cache_key, {
+            result = {
                 'output': final_output,
-                'error': final_error,
                 'finished': True
-            }, timeout=3600)
+            }
+            if final_error:
+                result['error'] = final_error
+            cache.set(cache_key, result, timeout=3600)
         except Exception:
             # If cache still fails, store minimal info
             # NOTE: Cannot use print() as stdout is redirected to FilteredStringIO
             try:
-                cache.set(cache_key, {
+                result = {
                     'output': 'Command completed but output too large for cache',
-                    'error': final_error[:1000] if final_error else '',
                     'finished': True
-                }, timeout=3600)
+                }
+                if final_error:
+                    result['error'] = final_error[:1000]
+                cache.set(cache_key, result, timeout=3600)
             except Exception:
                 # Last resort: mark as finished with error message
                 pass
@@ -323,7 +327,6 @@ def start_command(request):
     # Initialize cache
     cache.set(cache_key, {
         'output': '',
-        'error': '',
         'finished': False
     }, timeout=3600)
 
